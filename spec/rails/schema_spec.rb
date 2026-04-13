@@ -44,12 +44,12 @@ RSpec.describe Rails::Schema do
 
   describe ".generate" do
     let(:schema_data) { { "users" => [{ name: "id", type: "integer" }] } }
-    let(:models) { [double("User", name: "User")] }
+    let(:models) { [double("User", name: "User", table_name: "users")] }
     let(:graph_data) { { nodes: [], edges: [], metadata: {} } }
     let(:output_path) { "/tmp/schema.html" }
 
     let(:ruby_parser) { instance_double(Rails::Schema::Extractor::SchemaFileParser, parse: schema_data) }
-    let(:scanner) { instance_double(Rails::Schema::Extractor::ModelScanner, scan: models) }
+    let(:scanner) { instance_double(Rails::Schema::Extractor::ModelScanner, scan: models, scan_tableless: []) }
     let(:column_reader) { instance_double(Rails::Schema::Extractor::ColumnReader) }
     let(:graph_builder) { instance_double(Rails::Schema::Transformer::GraphBuilder, build: graph_data) }
     let(:html_generator) { instance_double(Rails::Schema::Renderer::HtmlGenerator, render_to_file: output_path) }
@@ -67,7 +67,7 @@ RSpec.describe Rails::Schema do
       result = Rails::Schema.generate
 
       expect(scanner).to have_received(:scan)
-      expect(graph_builder).to have_received(:build).with(models)
+      expect(graph_builder).to have_received(:build).with(models, tableless_models: [], table_proxies: [])
       expect(html_generator).to have_received(:render_to_file).with(nil)
       expect(result).to eq(output_path)
     end
@@ -182,7 +182,7 @@ RSpec.describe Rails::Schema do
     let(:ruby_parser) { instance_double(Rails::Schema::Extractor::SchemaFileParser, parse: ruby_data) }
     let(:sql_parser) { instance_double(Rails::Schema::Extractor::StructureSqlParser, parse: sql_data) }
 
-    let(:scanner) { instance_double(Rails::Schema::Extractor::ModelScanner, scan: []) }
+    let(:scanner) { instance_double(Rails::Schema::Extractor::ModelScanner, scan: [], scan_tableless: []) }
     let(:column_reader) { instance_double(Rails::Schema::Extractor::ColumnReader) }
     let(:graph_builder) { instance_double(Rails::Schema::Transformer::GraphBuilder, build: { nodes: [], edges: [], metadata: {} }) }
     let(:html_generator) { instance_double(Rails::Schema::Renderer::HtmlGenerator, render_to_file: "/tmp/out.html") }

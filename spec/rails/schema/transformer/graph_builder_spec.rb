@@ -46,6 +46,17 @@ RSpec.describe Rails::Schema::Transformer::GraphBuilder do
       expect(result[:metadata][:model_count]).to eq(4)
     end
 
+    it "sets tableless_model_count and table_only_count to zero when no special nodes" do
+      expect(result[:metadata][:tableless_model_count]).to eq(0)
+      expect(result[:metadata][:table_only_count]).to eq(0)
+    end
+
+    it "assigns node_type 'model' to all regular nodes" do
+      node_types = result[:nodes].map { |n| n[:node_type] }.uniq
+
+      expect(node_types).to eq(["model"])
+    end
+
     it "includes a User -> Post edge" do
       edge = result[:edges].find { |e| e[:from] == "User" && e[:to] == "Post" }
 
@@ -247,6 +258,148 @@ RSpec.describe Rails::Schema::Transformer::GraphBuilder do
 
       expect(edge).not_to be_nil
       expect(edge[:from]).to eq("HABTM_Things (things_roles)")
+    end
+  end
+
+  describe "#build with tableless_models" do
+    let(:tableless_model) { double("Orphan", name: "Orphan", table_name: "orphans") }
+    let(:column_reader) { instance_double(Rails::Schema::Extractor::ColumnReader) }
+    let(:association_reader) { instance_double(Rails::Schema::Extractor::AssociationReader) }
+
+    before do
+      allow(column_reader).to receive(:read).with(User).and_return([])
+      allow(association_reader).to receive(:read).with(User).and_return([])
+      allow(association_reader).to receive(:read).with(tableless_model).and_return(
+        [{ from: "Orphan", to: "User", association_type: "belongs_to", label: "user",
+           foreign_key: "user_id", through: nil, polymorphic: false }]
+      )
+    end
+
+    let(:builder) { described_class.new(column_reader: column_reader, association_reader: association_reader) }
+
+    it "assigns node_type 'tableless_model' to tableless nodes" do
+      result = builder.build([User], tableless_models: [tableless_model])
+      orphan_node = result[:nodes].find { |n| n[:id] == "Orphan" }
+
+      expect(orphan_node[:node_type]).to eq("tableless_model")
+    end
+
+    it "assigns node_type 'model' to the regular nodes alongside them" do
+      result = builder.build([User], tableless_models: [tableless_model])
+      user_node = result[:nodes].find { |n| n[:id] == "User" }
+
+      expect(user_node[:node_type]).to eq("model")
+    end
+
+    it "gives tableless_model nodes empty columns regardless of what column_reader returns" do
+      allow(column_reader).to receive(:read).with(tableless_model)
+                                            .and_return([{ name: "id", type: "integer" }])
+
+      result = builder.build([User], tableless_models: [tableless_model])
+      orphan_node = result[:nodes].find { |n| n[:id] == "Orphan" }
+
+      expect(orphan_node[:columns]).to be_empty
+    end
+
+    it "builds edges from tableless_model associations" do
+      result = builder.build([User], tableless_models: [tableless_model])
+      edge = result[:edges].find { |e| e[:from] == "Orphan" || e[:to] == "Orphan" }
+
+      expect(edge).not_to be_nil
+    end
+
+    it "counts tableless_model_count correctly in metadata" do
+      result = builder.build([User], tableless_models: [tableless_model])
+
+      expect(result[:metadata][:tableless_model_count]).to eq(1)
+      expect(result[:metadata][:model_count]).to eq(1)
+      expect(result[:metadata][:table_only_count]).to eq(0)
+    end
+  end
+
+  describe "#build with table_proxies" do
+    let(:proxy) { Rails::Schema::Extractor::TableProxy.new("legacy_records") }
+    let(:column_reader) { instance_double(Rails::Schema::Extractor::ColumnReader) }
+    let(:association_reader) { instance_double(Rails::Schema::Extractor::AssociationReader) }
+    let(:proxy_columns) do
+      [{ name: "id", type: "integer", nullable: false, default: nil, primary: true },
+       { name: "data", type: "text", nullable: true, default: nil, primary: false }]
+    end
+
+    before do
+      allow(column_reader).to receive(:read).with(User).and_return([])
+      allow(column_reader).to receive(:read).with(proxy).and_return(proxy_columns)
+      allow(association_reader).to receive(:read).with(User).and_return([])
+    end
+
+    let(:builder) { described_class.new(column_reader: column_reader, association_reader: association_reader) }
+
+    it "assigns node_type 'table_only' to proxy nodes" do
+      result = builder.build([User], table_proxies: [proxy])
+      proxy_node = result[:nodes].find { |n| n[:id] == "legacy_records (table)" }
+
+      expect(proxy_node[:node_type]).to eq("table_only")
+    end
+
+    it "uses the proxy's namespaced name as the node ID" do
+      result = builder.build([User], table_proxies: [proxy])
+      node_ids = result[:nodes].map { |n| n[:id] }
+
+      expect(node_ids).to include("legacy_records (table)")
+    end
+
+    it "includes columns from column_reader for proxy nodes" do
+      result = builder.build([User], table_proxies: [proxy])
+      proxy_node = result[:nodes].find { |n| n[:id] == "legacy_records (table)" }
+
+      expect(proxy_node[:columns].map { |c| c[:name] }).to contain_exactly("id", "data")
+    end
+
+    it "does not invoke association_reader for proxy nodes" do
+      expect(association_reader).not_to receive(:read).with(proxy)
+
+      builder.build([User], table_proxies: [proxy])
+    end
+
+    it "counts table_only_count correctly in metadata" do
+      result = builder.build([User], table_proxies: [proxy])
+
+      expect(result[:metadata][:table_only_count]).to eq(1)
+      expect(result[:metadata][:model_count]).to eq(1)
+      expect(result[:metadata][:tableless_model_count]).to eq(0)
+    end
+  end
+
+  describe "#build metadata with all three node types present" do
+    let(:tableless) { double("T", name: "T", table_name: "ts") }
+    let(:proxy)     { Rails::Schema::Extractor::TableProxy.new("legacy") }
+    let(:column_reader) { instance_double(Rails::Schema::Extractor::ColumnReader) }
+    let(:association_reader) { instance_double(Rails::Schema::Extractor::AssociationReader) }
+
+    before do
+      allow(column_reader).to receive(:read).and_return([])
+      allow(association_reader).to receive(:read).and_return([])
+    end
+
+    let(:builder) { described_class.new(column_reader: column_reader, association_reader: association_reader) }
+
+    it "reports independent counts for each node type" do
+      result = builder.build([User], tableless_models: [tableless], table_proxies: [proxy])
+
+      expect(result[:metadata]).to include(
+        model_count: 1,
+        tableless_model_count: 1,
+        table_only_count: 1
+      )
+    end
+
+    it "assigns correct node_type to each node" do
+      result = builder.build([User], tableless_models: [tableless], table_proxies: [proxy])
+      by_type = result[:nodes].group_by { |n| n[:node_type] }
+
+      expect(by_type["model"].map { |n| n[:id] }).to contain_exactly("User")
+      expect(by_type["tableless_model"].map { |n| n[:id] }).to contain_exactly("T")
+      expect(by_type["table_only"].map { |n| n[:id] }).to contain_exactly("legacy (table)")
     end
   end
 end

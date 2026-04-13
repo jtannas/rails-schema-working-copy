@@ -8,6 +8,7 @@ require_relative "schema/extractor/schema_file_parser"
 require_relative "schema/extractor/structure_sql_parser"
 require_relative "schema/extractor/packwerk_discovery"
 require_relative "schema/extractor/model_scanner"
+require_relative "schema/extractor/table_proxy"
 require_relative "schema/extractor/column_reader"
 require_relative "schema/extractor/association_reader"
 require_relative "schema/transformer/graph_builder"
@@ -53,12 +54,37 @@ module Rails
 
       def generate_active_record(output:)
         schema_data = parse_schema
-        models = Extractor::ModelScanner.new(schema_data: schema_data).scan
+        scanner = Extractor::ModelScanner.new(schema_data: schema_data)
+        models = scanner.scan
+        tableless_models = scanner.scan_tableless
+        table_proxies = build_table_proxies(schema_data, models + tableless_models)
         column_reader = Extractor::ColumnReader.new(schema_data: schema_data)
-        graph_data = Transformer::GraphBuilder.new(column_reader: column_reader).build(models)
+        builder = Transformer::GraphBuilder.new(column_reader: column_reader)
+        graph_data = builder.build(models, tableless_models: tableless_models, table_proxies: table_proxies)
         graph_data[:metadata][:mode] = "active_record"
-        generator = Renderer::HtmlGenerator.new(graph_data: graph_data)
-        generator.render_to_file(output)
+        Renderer::HtmlGenerator.new(graph_data: graph_data).render_to_file(output)
+      end
+
+      def build_table_proxies(schema_data, claimed_models)
+        return [] if schema_data.nil? || schema_data.empty?
+
+        claimed_tables = claimed_models.to_set(&:table_name)
+        schema_data.keys
+                   .reject { |t| claimed_tables.include?(t) || excluded_table?(t) }
+                   .map { |t| Extractor::TableProxy.new(t) }
+                   .sort_by(&:table_name)
+      end
+
+      def excluded_table?(table_name)
+        return true if configuration.exclude_table_if&.call(table_name)
+
+        configuration.exclude_tables.any? do |pattern|
+          if pattern.end_with?("*")
+            table_name.start_with?(pattern.delete_suffix("*"))
+          else
+            table_name == pattern
+          end
+        end
       end
 
       def require_mongoid_extractors

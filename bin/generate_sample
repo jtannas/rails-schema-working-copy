@@ -130,8 +130,29 @@ end
 # ---------------------------------------------------------------------------
 MODELS = [User, Post, Comment, Tag, Admin::Dashboard, Admin::Reports::Summary].freeze
 
-column_reader = Rails::Schema::Extractor::ColumnReader.new(schema_data: {})
-graph_data    = Rails::Schema::Transformer::GraphBuilder.new(column_reader: column_reader).build(MODELS)
+# Build schema_data from the live in-memory connection so that:
+#   - ColumnReader serves column metadata without re-hitting AR reflection per model
+#   - Tables with no model entry (e.g. posts_tags) can be surfaced as table_only nodes
+AR_INTERNAL_TABLES = %w[schema_migrations ar_internal_metadata].freeze
+
+conn        = ActiveRecord::Base.connection
+schema_data = conn.tables.reject { |t| AR_INTERNAL_TABLES.include?(t) }.to_h do |table|
+  pk      = conn.primary_key(table)
+  columns = conn.columns(table).map do |col|
+    { name: col.name, type: col.type.to_s, nullable: col.null, primary: col.name == pk, default: col.default }
+  end
+  [table, columns]
+end
+
+claimed       = MODELS.to_set(&:table_name)
+table_proxies = schema_data.keys
+                           .reject  { |t| claimed.include?(t) }
+                           .map     { |t| Rails::Schema::Extractor::TableProxy.new(t) }
+                           .sort_by(&:table_name)
+
+column_reader = Rails::Schema::Extractor::ColumnReader.new(schema_data: schema_data)
+builder       = Rails::Schema::Transformer::GraphBuilder.new(column_reader: column_reader)
+graph_data    = builder.build(MODELS, table_proxies: table_proxies)
 graph_data[:metadata][:mode] = "active_record"
 
 # ---------------------------------------------------------------------------

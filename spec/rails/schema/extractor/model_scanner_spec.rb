@@ -333,4 +333,81 @@ RSpec.describe Rails::Schema::Extractor::ModelScanner do
       end
     end
   end
+
+  describe "#scan_tableless" do
+    context "with schema_data that covers only some tables" do
+      let(:schema_data) do
+        {
+          "users" => [{ name: "id", type: "integer", nullable: false, default: nil, primary: true }],
+          "posts" => [{ name: "id", type: "integer", nullable: false, default: nil, primary: true }]
+        }
+      end
+
+      let(:scanner) { described_class.new(schema_data: schema_data) }
+
+      it "returns models whose tables are absent from schema_data" do
+        model_names = scanner.scan_tableless.map(&:name)
+
+        expect(model_names).to include("Comment", "Tag")
+        expect(model_names).not_to include("User", "Post")
+      end
+
+      it "is disjoint from scan" do
+        scan_names = scanner.scan.map(&:name)
+        tableless_names = scanner.scan_tableless.map(&:name)
+
+        expect(scan_names & tableless_names).to be_empty
+      end
+
+      it "returns results sorted by name" do
+        names = scanner.scan_tableless.map(&:name)
+
+        expect(names).to eq(names.sort)
+      end
+
+      it "applies exclude_models to tableless models" do
+        Rails::Schema.configure { |c| c.exclude_models = ["Comment"] }
+
+        model_names = described_class.new(schema_data: schema_data).scan_tableless.map(&:name)
+
+        expect(model_names).not_to include("Comment")
+        expect(model_names).to include("Tag")
+      end
+
+      it "applies exclude_model_if proc to tableless models" do
+        Rails::Schema.configure { |c| c.exclude_model_if = ->(model) { model.name == "Tag" } }
+
+        model_names = described_class.new(schema_data: schema_data).scan_tableless.map(&:name)
+
+        expect(model_names).not_to include("Tag")
+        expect(model_names).to include("Comment")
+      end
+    end
+
+    context "when all tables are present in schema_data" do
+      let(:full_schema_data) do
+        %w[users posts comments tags posts_tags admin_dashboards admin_reports_summaries].to_h do |t|
+          [t, [{ name: "id", type: "integer", nullable: false, default: nil, primary: true }]]
+        end
+      end
+
+      it "returns an empty list" do
+        models = described_class.new(schema_data: full_schema_data).scan_tableless
+
+        expect(models).to be_empty
+      end
+    end
+
+    it "does not re-trigger eager loading when called after scan" do
+      schema_data = { "users" => [] }
+      scanner = described_class.new(schema_data: schema_data)
+      scanner.scan
+
+      # A second call (via scan_tableless) must not double-load; result is stable
+      first  = scanner.scan_tableless.map(&:name)
+      second = scanner.scan_tableless.map(&:name)
+
+      expect(first).to eq(second)
+    end
+  end
 end

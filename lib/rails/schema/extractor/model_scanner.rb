@@ -7,6 +7,7 @@ module Rails
         def initialize(configuration: ::Rails::Schema.configuration, schema_data: nil)
           @configuration = configuration
           @schema_data = schema_data.nil? || schema_data.empty? ? nil : schema_data
+          @eager_loaded = false
         end
 
         def scan
@@ -22,9 +23,22 @@ module Rails
           included.sort_by(&:name)
         end
 
+        def scan_tableless
+          eager_load_models!
+
+          all_descendants = ActiveRecord::Base.descendants
+          non_abstract = all_descendants.reject(&:abstract_class?)
+          named = non_abstract.reject { |m| m.name.nil? }
+          without_tables = named.reject { |m| table_known?(m) }
+          without_tables.reject { |m| excluded?(m) }.sort_by(&:name)
+        end
+
         private
 
         def eager_load_models!
+          return if @eager_loaded
+
+          @eager_loaded = true
           return unless defined?(::Rails.application) && ::Rails.application
 
           if defined?(::Rails.autoloaders) && ::Rails.autoloaders.respond_to?(:main)
